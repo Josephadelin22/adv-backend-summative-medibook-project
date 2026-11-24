@@ -6,10 +6,12 @@ const redis = require('./config/redis');
 
 const app = express();
 
+const doctorRoutes = require('./routes/doctor.routes');
 const patientRoutes = require('./routes/patient.routes');
 
 // Parse incoming JSON requests
 app.use(express.json());
+app.use('/api/doctors', doctorRoutes);
 
 app.use('/api/patients', patientRoutes);
 
