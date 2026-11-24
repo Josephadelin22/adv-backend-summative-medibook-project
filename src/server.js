@@ -6,8 +6,12 @@ const redis = require('./config/redis');
 
 const app = express();
 
+const patientRoutes = require('./routes/patient.routes');
+
 // Parse incoming JSON requests
 app.use(express.json());
+
+app.use('/api/patients', patientRoutes);
 
 // Basic health-check endpoint
 app.get('/health', async (req, res) => {
