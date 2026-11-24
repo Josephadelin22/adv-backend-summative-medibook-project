@@ -8,12 +8,14 @@ const app = express();
 
 const doctorRoutes = require('./routes/doctor.routes');
 const patientRoutes = require('./routes/patient.routes');
-
+const appointmentRoutes = require('./routes/appointment.routes');
 // Parse incoming JSON requests
 app.use(express.json());
 app.use('/api/doctors', doctorRoutes);
 
 app.use('/api/patients', patientRoutes);
+
+app.use('/api/appointments', appointmentRoutes);
 
 // Basic health-check endpoint
 app.get('/health', async (req, res) => {
