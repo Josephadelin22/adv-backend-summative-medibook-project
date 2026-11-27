@@ -35,33 +35,80 @@ async function findById(id) {
 }
 
 // Create an appointment
+
 async function create(data) {
-  const {
-    reference,
-    patient_id,
-    doctor_id,
-    appointment_datetime,
-    consultation_fee,
-    amount_paid
-  } = data;
+  const connection = await pool.getConnection();
+  let appointmentId;
 
-  const [result] = await pool.execute(
-    `INSERT INTO appointments
-     (reference, patient_id, doctor_id, appointment_datetime,
-      consultation_fee, amount_paid)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      reference,
-      patient_id,
-      doctor_id,
-      appointment_datetime,
-      consultation_fee,
-      amount_paid
-    ]
-  );
+  try {
+    await connection.beginTransaction();
 
-  return findById(result.insertId);
+    // Lock the doctor row to serialize bookings for this doctor
+    const [doctors] = await connection.execute(
+      'SELECT id FROM doctors WHERE id = ? FOR UPDATE',
+      [data.doctor_id]
+    );
+
+    if (doctors.length === 0) {
+      const error = new Error('Doctor not found');
+      error.code = 'ER_NO_REFERENCED_ROW_2';
+      throw error;
+    }
+
+    // Determine the appointment day
+    const appointmentDay = new Date(
+      data.appointment_datetime
+    ).toISOString().slice(0, 10);
+
+    // Count non-cancelled appointments for this doctor on that day
+    const [rows] = await connection.execute(
+      `SELECT COUNT(*) AS total
+       FROM appointments
+       WHERE doctor_id = ?
+         AND DATE(appointment_datetime) = ?
+         AND status <> 'cancelled'`,
+      [data.doctor_id, appointmentDay]
+    );
+
+    if (Number(rows[0].total) >= 12) {
+      const error = new Error(
+        'Doctor has reached the daily appointment limit'
+      );
+      error.code = 'APPOINTMENT_DAILY_LIMIT';
+      throw error;
+    }
+
+    // Insert the appointment
+    const [result] = await connection.execute(
+      `INSERT INTO appointments
+       (reference, patient_id, doctor_id, appointment_datetime,
+        consultation_fee, amount_paid)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        data.reference,
+        data.patient_id,
+        data.doctor_id,
+        data.appointment_datetime,
+        data.consultation_fee,
+        data.amount_paid
+      ]
+    );
+
+    appointmentId = result.insertId;
+
+    await connection.commit();
+
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+
+  } finally {
+    connection.release();
+  }
+
+  return findById(appointmentId);
 }
+
 
 // Cancel an appointment
 async function cancel(id, refundAmount) {

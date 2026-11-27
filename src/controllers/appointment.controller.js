@@ -1,16 +1,19 @@
 
 const crypto = require('crypto');
 
+const { logEvent } = require('../utils/auditLogger');
+
 const Appointment = require('../models/appointment.model');
 const Patient = require('../models/patient.model');
 const Doctor = require('../models/doctor.model');
+const Waitlist = require('../utils/waitlist');
 
 // GET /api/appointments
 async function getAllAppointments(req, res) {
   try {
     const appointments = await Appointment.findAll();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: appointments.length,
       data: appointments
@@ -18,7 +21,7 @@ async function getAllAppointments(req, res) {
   } catch (error) {
     console.error('Get appointments error:', error.message);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to retrieve appointments'
     });
@@ -28,7 +31,16 @@ async function getAllAppointments(req, res) {
 // GET /api/appointments/:id
 async function getAppointmentById(req, res) {
   try {
-    const appointment = await Appointment.findById(req.params.id);
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid appointment ID'
+      });
+    }
+
+    const appointment = await Appointment.findById(id);
 
     if (!appointment) {
       return res.status(404).json({
@@ -37,18 +49,69 @@ async function getAppointmentById(req, res) {
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: appointment
     });
   } catch (error) {
     console.error('Get appointment error:', error.message);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to retrieve appointment'
     });
   }
+}
+
+// Validate appointment date and time
+function validateAppointmentDate(dateValue) {
+  const date = new Date(dateValue);
+
+  if (Number.isNaN(date.getTime())) {
+    return {
+      valid: false,
+      message: 'Invalid appointment date'
+    };
+  }
+
+  if (date <= new Date()) {
+    return {
+      valid: false,
+      message: 'Appointment date must be in the future'
+    };
+  }
+
+  // Clinic schedule: 09:00 to 17:00
+  // Appointment duration: 30 minutes
+  const timeMatch = String(dateValue).match(
+    /T(\d{2}):(\d{2})(?::(\d{2}))?/
+  );
+
+  if (!timeMatch) {
+    return {
+      valid: false,
+      message: 'Appointment date must include a valid time'
+    };
+  }
+
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  const seconds = Number(timeMatch[3] || 0);
+
+  const validTime =
+    hours >= 9 &&
+    hours < 17 &&
+    (minutes === 0 || minutes === 30) &&
+    seconds === 0;
+
+  if (!validTime) {
+    return {
+      valid: false,
+      message: 'Appointments must start every 30 minutes between 09:00 and 16:30'
+    };
+  }
+
+  return { valid: true };
 }
 
 // POST /api/appointments
@@ -61,39 +124,43 @@ async function createAppointment(req, res) {
       amount_paid = 0
     } = req.body;
 
-    // Validate required fields
+    const patientId = Number(patient_id);
+    const doctorId = Number(doctor_id);
+
+    // Validate IDs
     if (
-      !Number.isInteger(Number(patient_id)) ||
-      Number(patient_id) <= 0 ||
-      !Number.isInteger(Number(doctor_id)) ||
-      Number(doctor_id) <= 0 ||
-      !appointment_datetime
+      !Number.isInteger(patientId) ||
+      patientId <= 0 ||
+      !Number.isInteger(doctorId) ||
+      doctorId <= 0
     ) {
       return res.status(400).json({
         success: false,
-        message: 'Valid patient_id, doctor_id and appointment_datetime are required'
+        message: 'Valid patient_id and doctor_id are required'
       });
     }
 
     // Validate appointment date
-    const appointmentDate = new Date(appointment_datetime);
-
-    if (Number.isNaN(appointmentDate.getTime())) {
+    if (!appointment_datetime) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid appointment date'
+        message: 'appointment_datetime is required'
       });
     }
 
-    if (appointmentDate <= new Date()) {
+    const dateValidation = validateAppointmentDate(
+      appointment_datetime
+    );
+
+    if (!dateValidation.valid) {
       return res.status(400).json({
         success: false,
-        message: 'Appointment date must be in the future'
+        message: dateValidation.message
       });
     }
 
-    // Check that patient exists
-    const patient = await Patient.findById(Number(patient_id));
+    // Check patient
+    const patient = await Patient.findById(patientId);
 
     if (!patient) {
       return res.status(404).json({
@@ -102,8 +169,8 @@ async function createAppointment(req, res) {
       });
     }
 
-    // Check that doctor exists
-    const doctor = await Doctor.findById(Number(doctor_id));
+    // Check doctor
+    const doctor = await Doctor.findById(doctorId);
 
     if (!doctor) {
       return res.status(404).json({
@@ -112,7 +179,7 @@ async function createAppointment(req, res) {
       });
     }
 
-    // Use the doctor's current fee, not a price sent by the client
+    // Retrieve consultation fee from database
     const fee = Number(doctor.consultation_fee);
     const payment = Number(amount_paid);
 
@@ -126,31 +193,91 @@ async function createAppointment(req, res) {
         message: 'amount_paid must be between 0 and the consultation fee'
       });
     }
-    
-    // Generate a unique reference for the appointment
-    const reference = `APT-${Date.now().toString(36)}${crypto.randomBytes(4).toString('hex')}`;
 
-    const appointment = await Appointment.create({
-      reference,
-      patient_id: Number(patient_id),
-      doctor_id: Number(doctor_id),
-      appointment_datetime,
-      consultation_fee: fee,
-      amount_paid: payment
+    // Generate a unique reference (maximum 20 characters)
+    const reference =
+      `APT-${Date.now().toString(36)}${crypto.randomBytes(4).toString('hex')}`;
+
+    let appointment;
+
+    // Attempt to create appointment
+    try {
+      appointment = await Appointment.create({
+        reference,
+        patient_id: patientId,
+        doctor_id: doctorId,
+        appointment_datetime,
+        consultation_fee: fee,
+        amount_paid: payment
+      });
+
+    } catch (error) {
+
+      // Handle occupied appointment slot
+      if (error.code === 'ER_DUP_ENTRY') {
+        try {
+          const position = await Waitlist.addToWaitlist({
+            patient_id: patientId,
+            doctor_id: doctorId,
+            appointment_datetime,
+            consultation_fee: fee,
+            amount_paid: payment
+          });
+
+          // AUDIT LOG: Patient added to waitlist
+          await logEvent('PATIENT_ADDED_TO_WAITLIST', {
+            patientId,
+            doctorId,
+            appointmentDate: appointment_datetime,
+            position
+          });
+
+          return res.status(202).json({
+            success: true,
+            message: 'Patient added to waiting list',
+            data: {
+              doctor_id: doctorId,
+              appointment_datetime,
+              waiting_list_position: position
+            }
+          });
+
+        } catch (queueError) {
+          console.error('Waitlist error:', queueError.message);
+
+          return res.status(503).json({
+            success: false,
+            message: 'Appointment slot is occupied and waiting list is unavailable'
+          });
+        }
+      }
+
+      throw error;
+    }
+
+    // AUDIT LOG: Appointment successfully created
+    await logEvent('APPOINTMENT_CREATED', {
+      appointmentId: appointment.id,
+      reference: appointment.reference,
+      patientId,
+      doctorId,
+      appointmentDate: appointment_datetime,
+      amountPaid: payment
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Appointment booked successfully',
       data: appointment
     });
+
   } catch (error) {
     console.error('Create appointment error:', error.message);
 
-    if (error.code === 'ER_DUP_ENTRY') {
+    if (error.code === 'APPOINTMENT_DAILY_LIMIT') {
       return res.status(409).json({
         success: false,
-        message: 'This doctor already has an appointment at that time'
+        message: 'Doctor has reached the maximum of 12 appointments per day'
       });
     }
 
@@ -161,7 +288,7 @@ async function createAppointment(req, res) {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to book appointment'
     });
@@ -180,13 +307,24 @@ function calculateRefund(amountPaid, minutesBeforeAppointment) {
     percentage = 50;
   }
 
-  return Number((amountPaid * percentage / 100).toFixed(2));
+  return Number(
+    (amountPaid * percentage / 100).toFixed(2)
+  );
 }
 
 // PATCH /api/appointments/:id/cancel
 async function cancelAppointment(req, res) {
   try {
-    const appointment = await Appointment.findById(req.params.id);
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid appointment ID'
+      });
+    }
+
+    const appointment = await Appointment.findById(id);
 
     if (!appointment) {
       return res.status(404).json({
@@ -202,17 +340,23 @@ async function cancelAppointment(req, res) {
       });
     }
 
-    const appointmentTime = new Date(appointment.appointment_datetime);
+    const appointmentTime = new Date(
+      appointment.appointment_datetime
+    );
+
     const now = new Date();
 
     const minutesBeforeAppointment =
-      (appointmentTime.getTime() - now.getTime()) / (1000 * 60);
+      (appointmentTime.getTime() - now.getTime()) / 60000;
+
+    const amountPaid = Number(appointment.amount_paid);
 
     const refundAmount = calculateRefund(
-      Number(appointment.amount_paid),
+      amountPaid,
       minutesBeforeAppointment
     );
 
+    // Update appointment in MySQL
     const cancelled = await Appointment.cancel(
       appointment.id,
       refundAmount
@@ -225,23 +369,57 @@ async function cancelAppointment(req, res) {
       });
     }
 
-    res.status(200).json({
+    // AUDIT LOG: Appointment cancelled
+    await logEvent('APPOINTMENT_CANCELLED', {
+      appointmentId: appointment.id,
+      patientId: appointment.patient_id,
+      doctorId: appointment.doctor_id,
+      refundAmount,
+      amountPaid
+    });
+
+    // Trigger waitlist processing in Redis
+    let waitlistJobQueued = true;
+
+    try {
+      await Waitlist.enqueueJob({
+        type: 'PROMOTE_WAITLIST',
+        doctor_id: appointment.doctor_id,
+        appointment_datetime: appointment.appointment_datetime
+      });
+
+    } catch (queueError) {
+      waitlistJobQueued = false;
+
+      console.error(
+        'Failed to enqueue waitlist job:',
+        queueError.message
+      );
+    }
+
+    const refundPercentage =
+      amountPaid > 0
+        ? Number(
+            (refundAmount / amountPaid * 100).toFixed(2)
+          )
+        : 0;
+
+    return res.status(200).json({
       success: true,
       message: 'Appointment cancelled successfully',
       data: {
         appointment_id: appointment.id,
-        amount_paid: Number(appointment.amount_paid),
-        refund_percentage:
-          Number(appointment.amount_paid) > 0
-            ? Number((refundAmount / Number(appointment.amount_paid) * 100).toFixed(2))
-            : 0,
-        refund_amount: refundAmount
+        amount_paid: amountPaid,
+        refund_percentage: refundPercentage,
+        refund_amount: refundAmount,
+        waitlist_job_queued: waitlistJobQueued
       }
     });
+
   } catch (error) {
     console.error('Cancel appointment error:', error.message);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to cancel appointment'
     });
@@ -253,5 +431,6 @@ module.exports = {
   getAppointmentById,
   createAppointment,
   cancelAppointment,
-  calculateRefund
+  calculateRefund,
+  validateAppointmentDate
 };

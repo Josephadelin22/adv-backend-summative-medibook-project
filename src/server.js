@@ -9,9 +9,11 @@ const app = express();
 const doctorRoutes = require('./routes/doctor.routes');
 const patientRoutes = require('./routes/patient.routes');
 const appointmentRoutes = require('./routes/appointment.routes');
+const reportRoutes = require('./routes/report.routes');
 // Parse incoming JSON requests
 app.use(express.json());
 app.use('/api/doctors', doctorRoutes);
+app.use('/api/reports', reportRoutes);
 
 app.use('/api/patients', patientRoutes);
 
