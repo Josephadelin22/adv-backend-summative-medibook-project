@@ -1,10 +1,21 @@
 require('dotenv').config();
 
 const express = require('express');
+const path = require('path');
 const pool = require('./config/database');
 const redis = require('./config/redis');
 
 const app = express();
+// Serve frontend files
+app.use(express.static(path.join(__dirname, '../public')));
+
+// Serve translation files
+app.use('/locales', express.static(path.join(__dirname, '../locales')));
+
+// Course feedback page
+app.get('/feedback', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/feedback.html'));
+});
 
 const doctorRoutes = require('./routes/doctor.routes');
 const patientRoutes = require('./routes/patient.routes');

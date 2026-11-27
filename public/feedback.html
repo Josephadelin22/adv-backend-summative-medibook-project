@@ -1,0 +1,57 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Course Feedback | MediBook</title>
+    <link rel="stylesheet" href="/css/feedback.css">
+</head>
+<body>
+
+    <main class="feedback-container">
+
+        <header class="feedback-header">
+            <h1 id="page-title">Course Feedback</h1>
+            <p id="instructions">
+                Please answer the following questions honestly.
+            </p>
+        </header>
+
+        <section class="feedback-info">
+            <p>
+                <strong id="date-label">Today's date:</strong>
+                <span id="feedback-date"></span>
+            </p>
+
+            <div class="language-control">
+                <label for="language-select" id="language-label">
+                    Language:
+                </label>
+
+                <select id="language-select">
+                    <option value="en">English</option>
+                    <option value="fr">Français</option>
+                </select>
+            </div>
+        </section>
+
+        <form id="feedback-form">
+
+            <div id="questions-container">
+               
+            </div>
+
+            <button type="submit" id="submit-button">
+                Submit Feedback
+            </button>
+
+            <p id="form-message" role="status"></p>
+
+        </form>
+
+    </main>
+
+    <script src="/js/feedback.js"></script>
+</body>
+</html>
